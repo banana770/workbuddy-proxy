@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────
+#  运行时产物 / 真实数据 —— 绝不入库
+#  Runtime artifacts and real data — never commit these.
+# ─────────────────────────────────────────────────────────────
+
+# 上游 400 时自动落盘的完整请求体（含真实对话内容）
+capture/
+
+# 日志：可能含 token、路径、请求内容
+*.log
+*.log.err
+*.err.log
+*.out.log
+*.out.err
+proxy-events.log
+
+# 运行状态
+*.pid
+ai-channel-status.txt
+
+# 重放 / 抓取产物
+_replay-*.json
+_live-models.json
+
+# 历史备份
+*.bak
+*.bak-*
+*.orig
+*.rej
+
+# 从第三方插件提取的身份条目 —— 请用 tools/extract-blocklist-for-zcode.mjs 本地生成
+identity-blocklist.json
+
+# 凭据（任何形式都不要入库）
+auth.json
+*.info
+.workbuddy-auth.json
+.workbuddy-ai-auth.json
+
+# 本机 hosts 备份
+hosts.bak*
+
+# ─────────────────────────────────────────────────────────────
+#  常规
+# ─────────────────────────────────────────────────────────────
+node_modules/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.vscode/
+.idea/
