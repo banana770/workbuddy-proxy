@@ -1,6 +1,8 @@
 # WorkBuddy Proxy
 
-把 **WorkBuddy**（腾讯国内版）和 **WorkBuddy AI**（腾讯国际版，workbuddy.ai）桌面客户端里**已登录账号**的模型，以本地 OpenAI / Anthropic 兼容接口暴露出来，供 **Codex**、**ZCode** 等客户端直接调用。
+把 **WorkBuddy**（腾讯国内版）和 **WorkBuddy AI**（腾讯国际版，workbuddy.ai）桌面客户端里**已登录账号**的模型，以本地 OpenAI / Anthropic 兼容接口暴露出来，供 **Codex**、**ZCode**、**DeepSeek Harness (DSH)** 等客户端直接调用。
+
+> **这是通用协议层，不是某个客户端的专用件。** 「Codex 味 / ZCode 味」说的是**线协议**（Responses / Anthropic Messages），不是**客户端** —— 任何说这两种协议之一的 CLI 都能接，包括 DSH、Claude Code 等。对照表见 [谁该接哪个端口](#谁该接哪个端口)。
 
 **零额外凭据** —— 不注册、不配置 API Key，直接复用桌面 App 自己的登录态。
 
@@ -54,7 +56,7 @@
 
 | | 之前 | 之后 |
 |---|---|---|
-| 这些模型能用的地方 | 只有 WorkBuddy 的 GUI | Codex / ZCode 里直接选 |
+| 这些模型能用的地方 | 只有 WorkBuddy 的 GUI | Codex / ZCode / DSH 里直接选 |
 | 切换成本 | 两个 App 之间复制粘贴 | 一个 provider 切过去 |
 | 凭据 | 需要单独申请 API Key | 零配置，复用桌面端登录态 |
 | 国际版 | 还得自己处理 DNS / 代理 | 自动兜底 |
@@ -81,6 +83,22 @@
   → 代理暴露 `/v1/messages`，双向翻译 Anthropic ⇄ OpenAI
 
 两者共享同一套上游契约知识、凭据处理、身份清洗与错误分类。
+
+### 谁该接哪个端口
+
+「味」是按**线协议**分的，不是按客户端分的 —— 任何说同一种协议的客户端都能接：
+
+| 客户端 | 它要什么协议 | 接哪个实例 |
+|---|---|---|
+| **Codex CLI**（≥ 0.15x） | OpenAI **Responses** `/v1/responses` | `8401`（国内版）/ `8403`（国际版） |
+| **ZCode**（Z.ai） | Anthropic **Messages** `/v1/messages` | `8400`（国内版）/ `8402`（国际版） |
+| Claude Code 等 Anthropic 风味 CLI | Anthropic Messages | `8400` / `8402` |
+| 任何 OpenAI Chat Completions 客户端 | `/v1/chat/completions` | `8401` / `8403` |
+| **DeepSeek Harness (DSH)** | 两种协议都支持，**任选** | 见 [DSH 接入](#dsh-接入) |
+
+> **codex 味不只服务 Codex。** 它同时挂了 `/v1/responses` 与 `/v1/chat/completions` 两个端点 ——
+> 实测 `GET /healthz` 返回 `"endpoints":["/v1/responses","/v1/chat/completions","/v1/models"]`。
+> 所以任何认 Chat Completions 的客户端也能接它。
 
 ---
 
@@ -133,6 +151,11 @@
 
 - **移植来的**：国际版**协议层** —— 基址、凭据文件位置、环境变量名、缓存文件名、区域判定、App 形状 UA、上游怪癖知识
 - **我写的是外层**：HTTP 服务与路由、协议翻译（Responses / Anthropic ⇄ OpenAI）、SSE 双向互转、非流式聚合、token 到期自动刷新与重试、mihomo 代理兜底、11128 清洗与自愈学习、错误码分类、看门狗与自启
+
+> **与 DSH 原生插件的关系**：`dsh-workbuddy-connect` 走的是**另一条路** —— 它作为 DSH 插件
+> 在进程内起本地反代并经 `ctx.llm.registerAdapter()` 直接注册 `workbuddy` / `workbuddy-ai`
+> 两个 provider，**只能用于 DSH**；本仓库是进程外的协议转换层，**任何客户端都能接（包括 DSH）**。
+> 两条路独立、互不依赖，任选其一即可。
 
 > 补充：`identity-blocklist.json`（从插件二进制里提取的身份条目）**刻意不入库**。
 > 它可从你本地已安装的插件用 `tools/extract-blocklist-for-zcode.mjs` 自行生成；
@@ -194,6 +217,59 @@ curl.exe -s http://127.0.0.1:8401/healthz
 
 - **ZCode**：provider `kind: "anthropic"` → `http://127.0.0.1:8400`（国际版 `8402`）
 - **Codex / cc-switch**：跑 `node codex\install-ccswitch-provider.mjs`（国际版 `-ai`，`--remove` 回滚）
+- **DeepSeek Harness (DSH)**：见下方 [DSH 接入](#dsh-接入)
+
+### DSH 接入
+
+DSH 的模型层（`@deepseek-ai/dsh-llm-pi-ai`）只认两种 `api` 值，正好对应本仓库的两种味，**两条路都能走**：
+
+| DSH 的 `api` | DSH 会请求 | 用哪个实例 | 对应本仓库的 |
+|---|---|---|---|
+| `openai-completions` | `{baseURL}/chat/completions` | `8401` / `8403` | codex 味 |
+| `anthropic-messages` | `{baseURL}/v1/messages` | `8400` / `8402` | zcode 味 |
+
+在 profile 的 `cordis.patch.yml` 里，给 `llm-pi-ai` 的 `providers:` 加一项即可。
+
+**走 zcode 味（Anthropic Messages）** —— `baseURL` 到端口为止：
+
+```yaml
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      workbuddy-cn:
+        displayName: WorkBuddy 国内版
+        apiKeyEnv: WB_PROXY_TOKEN          # 没设 WB_PROXY_TOKEN 就填任意非空值
+        api: anthropic-messages
+        baseURL: http://127.0.0.1:8400     # 国际版改 8402
+        models:
+          - id: glm-5.3
+            name: GLM-5.3
+            contextWindow: 200000
+            input: [text]
+```
+
+**走 codex 味（Chat Completions）** —— 注意 `baseURL` 要带 `/v1`：
+
+```yaml
+# 加在 providers: 下，与上面的 workbuddy-cn 同级
+workbuddy-cn-chat:
+  displayName: WorkBuddy 国内版 (chat)
+  apiKeyEnv: WB_PROXY_TOKEN
+  api: openai-completions
+  baseURL: http://127.0.0.1:8401/v1         # 国际版改 8403
+  models:
+    - id: deepseek-v4.1-flash
+      name: DeepSeek V4.1 Flash
+      contextWindow: 200000
+      input: [text]
+```
+
+**国内版 + 国际版都想用**，就把上面两段各写一份（国内版 `8400`/`8401`，国际版 `8402`/`8403`）。
+
+> `models` 里的 `id` 请填你账号实际能用的值 —— 跑 `node tools\sync-model-catalog.mjs`，
+> 或直接 `curl.exe -s http://127.0.0.1:8401/v1/models` 看列表。
+> **起代理必须用 `autostart/` 的 VBS**，别在 DSH 会话里手动起（见下方警告）。
 
 **开机自启**：见 [`autostart/README.md`](autostart/README.md)。
 **模型目录同步**：见 [`tools/README.md`](tools/README.md)。
@@ -252,7 +328,10 @@ curl.exe -s http://127.0.0.1:8401/healthz
 
 **What this is:** a local, zero-dependency protocol-translation proxy that exposes the models of an
 already-signed-in **WorkBuddy** (Tencent, CN) or **WorkBuddy AI** (Tencent, international) desktop
-client as OpenAI-Responses / Anthropic-Messages compatible endpoints for Codex and ZCode.
+client as OpenAI-Responses / Anthropic-Messages compatible endpoints. It is a **generic protocol
+layer, not a client-specific plugin**: Codex CLI and ZCode are the two clients whose wire protocols
+shaped the two flavours, but anything speaking the same protocol works — including
+**DeepSeek Harness (DSH)** and Claude Code.
 
 **Not mine:**
 
